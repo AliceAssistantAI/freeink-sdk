@@ -141,6 +141,9 @@ struct ListProps {
   // Inward offset of the scroll track from the band edge (for panels recessed
   // behind a bezel). -1 = inherit the theme's listScrollInset.
   int16_t scrollIndicatorInset = -1;
+  // Air between the rows and the scroll track. -1 = inherit: Screen::list()
+  // substitutes the theme's listScrollGap; raw list() falls back to 2.
+  int16_t scrollIndicatorGap = -1;
   bool centerSingleLine = false;
   // Mirrors row layout for RTL languages: icon and label move to the
   // trailing (right) edge, value/toggle move to the leading (left) edge --
@@ -596,7 +599,8 @@ inline int listContentHeight(const DrawTarget& target, AssetResolver* assets, Re
   const int inset = props.rowInset > 0 ? props.rowInset : 0;
   int width = rect.width - 2 * inset;
   if (props.scrollIndicator && props.scrollIndicatorWidth > 0) {
-    const int strip = props.scrollIndicatorWidth + (props.scrollIndicatorInset > 0 ? props.scrollIndicatorInset : 0) + 2;
+    const int strip = props.scrollIndicatorWidth + (props.scrollIndicatorInset > 0 ? props.scrollIndicatorInset : 0) +
+                      (props.scrollIndicatorGap < 0 ? 2 : props.scrollIndicatorGap);
     if (inset < strip) width -= strip - inset;
   }
   if (width <= 0) return rect.height;
@@ -631,6 +635,8 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
   const bool scrollLeft = props.scrollIndicatorSide == 1;
   const int16_t scrollInset =
       props.scrollIndicatorInset < 0 ? 0 : props.scrollIndicatorInset;
+  const int16_t scrollGap =
+      props.scrollIndicatorGap < 0 ? 2 : props.scrollIndicatorGap;
   const int16_t rowInset = props.rowInset < 0 ? 0 : props.rowInset;
   const uint16_t visible = listVisibleRows(rect, rowH, rowGap);
   // A nav-managed list reports how many indexes its last layout actually laid
@@ -677,8 +683,8 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
   }
   if (props.scrollIndicator && reserveScrollStrip && scrollW > 0) {
     // Rows only give up width when the row inset margin doesn't already
-    // clear the track (plus its bezel inset) plus 2px of air.
-    const int16_t needed = static_cast<int16_t>(scrollW + scrollInset + 2);
+    // clear the track (plus its bezel inset) plus its air.
+    const int16_t needed = static_cast<int16_t>(scrollW + scrollInset + scrollGap);
     if (rowInset < needed) {
       stripCut = static_cast<int16_t>(needed - rowInset);
       rowArea.width = static_cast<int16_t>(rowArea.width - stripCut);

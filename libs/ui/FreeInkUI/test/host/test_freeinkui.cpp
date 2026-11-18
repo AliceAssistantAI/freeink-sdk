@@ -4644,6 +4644,110 @@ void testHeaderReportsWhereWordsStart() {
   CHECK_EQ(bare.textLeft, bare.title.x);
 }
 
+// A band that wants its leading button to mirror its trailing one moves it
+// in, and the title, and where a caller's words may start, move with it.
+void testHeaderLeadingInsetMovesTheButtonAndTheWords() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  const auto layoutOf = [&](const int16_t inset, const bool centred) {
+    InteractionBuffer<8> interactions;
+    Frame<8> frame(draw, device, input, interactions);
+    HeaderProps props;
+    props.title = "Title";
+    props.centered = centred;
+    props.sidePadding = 16;
+    props.leadingIcon = lucideDeleteIcon28();
+    props.leadingAction = 500;
+    props.leadingStyles.normal.border = Paint::solid(Color::Black);
+    props.leadingStyles.normal.borderWidth = 2;
+    if (inset >= 0) props.leadingInset = inset;
+    HeaderLayout layout;
+    props.layoutOut = &layout;
+    header(frame, Rect{0, 0, 480, 64}, props);
+    CHECK_EQ(interactions.count(), 1u);
+    if (interactions.count() == 1) CHECK(interactions.data()[0].rect.x <= layout.leading.x);
+    return layout;
+  };
+  const HeaderLayout plain = layoutOf(-1, false);
+  CHECK_EQ(plain.leading.x, 4);  // the default is unchanged
+  const HeaderLayout moved = layoutOf(12, false);
+  CHECK_EQ(moved.leading.x, 12);
+  CHECK_EQ(moved.title.x, plain.title.x + 8);
+  CHECK_EQ(moved.textLeft, plain.textLeft + 8);
+  const HeaderLayout centred = layoutOf(12, true);
+  CHECK_EQ(centred.title.x, 16);
+  CHECK_EQ(centred.textLeft, moved.title.x);
+}
+
+// The air between a list's rows and its scroll track is a token. It was a
+// fixed 2px, which beside an outlined row reads as the track touching it.
+void testListScrollGapIsTheAirBesideTheTrack() {
+  const auto rowRight = [](const int16_t gap) {
+    FakeDrawTarget draw;
+    DeviceContext device = makeDevice();
+    InputSnapshot input;
+    InteractionBuffer<16> interactions;
+    Frame<16> frame(draw, device, input, interactions);
+    ListItem items[10]{};
+    for (int i = 0; i < 10; ++i) {
+      items[i].label = "row";
+      items[i].actionValue = static_cast<int16_t>(i);
+    }
+    ListProps props;
+    props.items = items;
+    props.count = 10;
+    props.action = 7;
+    props.rowHeight = 40;
+    if (gap >= 0) props.scrollIndicatorGap = gap;
+    list(frame, Rect{0, 0, 480, 200}, props);
+    int16_t right = -1;
+    bool track = false;
+    for (size_t k = 0; k < draw.opCount; ++k) {
+      const auto& op = draw.ops[k];
+      if (op.kind != FakeDrawTarget::Op::Fill) continue;
+      if (op.rect.height == 40 && op.rect.right() > right) right = op.rect.right();
+      if (op.rect.x == 477 && op.rect.width == 3) track = true;
+    }
+    CHECK(track);  // the track stays at the band's edge either way
+    return right;
+  };
+  CHECK_EQ(rowRight(-1), 475);  // raw list(): 2px of air, as before
+  CHECK_EQ(rowRight(6), 471);
+  CHECK_EQ(rowRight(12), 465);
+
+  // Screen::list() takes it from the theme.
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  InteractionBuffer<16> interactions;
+  Frame<16> frame(draw, device, input, interactions);
+  ThemeTokens theme;
+  theme.listScrollGap = 6;
+  theme.listSidePadding = 0;
+  Screen<16> screen(frame, theme);
+  ListItem items[30]{};
+  for (int i = 0; i < 30; ++i) {
+    items[i].label = "row";
+    items[i].actionValue = static_cast<int16_t>(i);
+  }
+  ListProps props;
+  props.items = items;
+  props.count = 30;
+  props.action = 7;
+  screen.list(props);
+  int16_t right = -1;
+  int16_t trackX = -1;
+  for (size_t k = 0; k < draw.opCount; ++k) {
+    const auto& op = draw.ops[k];
+    if (op.kind != FakeDrawTarget::Op::Fill) continue;
+    if (op.rect.width == theme.listScrollWidth && op.rect.height > 20) trackX = op.rect.x;
+    if (op.rect.width > 100 && op.rect.right() > right) right = op.rect.right();
+  }
+  CHECK(trackX > 0);
+  CHECK_EQ(trackX - right, 6);
+}
+
 void testScreenKeyboardUsesResponsiveHeight() {
   FakeDrawTarget draw;
   DeviceContext device{800, 480};
@@ -6362,6 +6466,8 @@ int main() {
   testKeyboardBottomHitOverflow();
   testHeaderLeadingButton();
   testHeaderReportsWhereWordsStart();
+  testHeaderLeadingInsetMovesTheButtonAndTheWords();
+  testListScrollGapIsTheAirBesideTheTrack();
   testScreenKeyboardUsesResponsiveHeight();
   testResponsiveKeyboardSizing();
   testKeyboardTypography();

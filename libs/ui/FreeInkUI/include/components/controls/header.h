@@ -59,6 +59,10 @@ struct HeaderProps {
   int16_t leadingValue = 0;
   StyleSet leadingStyles{};
   uint8_t leadingRadius = 0;
+  // The leading button's distance from the band's left edge. The trailing
+  // button keeps 12 from the right; a band that wants the two to mirror sets
+  // this to match.
+  int16_t leadingInset = 4;
   // Trailing action button on the right edge (a "Save"/"Done" mirroring the
   // leading back button). Label, icon, or both. Occupies the same slot as
   // rightLabel — set one or the other.
@@ -194,8 +198,8 @@ void header(Frame<MaxInteractions>& frame, Rect rect, const HeaderProps& props) 
     back.styles = props.leadingStyles;
     back.radius = props.leadingRadius;
     back.minTouchSize = props.minTouchSize;
-    const Rect backBox{static_cast<int16_t>(rect.x + 4), static_cast<int16_t>(rect.y + 4 + props.actionOffsetY), btn,
-                       btn};
+    const Rect backBox{static_cast<int16_t>(rect.x + props.leadingInset),
+                       static_cast<int16_t>(rect.y + 4 + props.actionOffsetY), btn, btn};
     button(frame, backBox, back);
     if (props.layoutOut) props.layoutOut->leading = backBox;
     // The button replaces the side padding at the leading edge rather than
@@ -208,8 +212,8 @@ void header(Frame<MaxInteractions>& frame, Rect rect, const HeaderProps& props) 
     const StyleSet face = props.leadingStyles.unset() ? defaultButtonStyles() : props.leadingStyles;
     const bool drawn = face.normal.background.kind != PaintKind::None ||
                        (face.normal.borderWidth > 0 && face.normal.border.kind != PaintKind::None);
-    const int16_t iconEnd =
-        drawn ? static_cast<int16_t>(4 + btn) : static_cast<int16_t>(4 + (btn + leading.width) / 2);
+    const int16_t iconEnd = drawn ? static_cast<int16_t>(props.leadingInset + btn)
+                                  : static_cast<int16_t>(props.leadingInset + (btn + leading.width) / 2);
     const int16_t inset = static_cast<int16_t>(iconEnd + 6 - sidePad);
     if (inset > 0) leadingInset = inset;
     if (!centeredTitle && leadingInset > 0) {

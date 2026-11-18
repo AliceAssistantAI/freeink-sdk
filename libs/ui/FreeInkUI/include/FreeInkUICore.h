@@ -670,6 +670,7 @@ struct ThemeTokens {
   // track hugs the edge); boards whose panel sits recessed behind the bezel set
   // this so the indicator clears the bezel and stays visible.
   int16_t listScrollInset = 0;
+  int16_t listScrollGap = 2;    // air between the rows and the scroll track
   // Header shape tokens, forwarded by Screen::header() the same way.
   int16_t headerSidePadding = 6;
   uint8_t headerUnderline = 1; // bottom rule thickness; 0 = none

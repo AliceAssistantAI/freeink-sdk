@@ -374,6 +374,8 @@ public:
       themed.scrollIndicatorSide = theme_.listScrollSide;
     if (themed.scrollIndicatorInset < 0)
       themed.scrollIndicatorInset = theme_.listScrollInset;
+    if (themed.scrollIndicatorGap < 0)
+      themed.scrollIndicatorGap = theme_.listScrollGap;
     // Rows inset within the band (Lyra pill); the scroll indicator stays at
     // the band's true edge.
     if (themed.rowInset < 0)
