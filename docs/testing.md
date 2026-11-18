@@ -14,6 +14,18 @@ Checks that native USB Serial/JTAG output is serviced without a blocking flush,
 and that UART, TinyUSB, Sticky's UART bridge, and simulator builds remain no-ops.
 Device tests must also verify timely acknowledgements and intact transfer data.
 
+## Paper Mono bring-up
+
+```sh
+python3 libs/hardware/BoardConfig/test/host/run_papermono_boot.py
+```
+
+Runs `PaperMonoBoard.h` against a model PMIC and IO expander. An expander that
+misses its first probes after a PMIC restart must still come up within the boot
+wait, whichever manager starts first. A failed setup must stay cached, so no rail
+in use is switched off later, and the power button must keep working. A failed
+expander read or mode write must not leave the touch controller in reset.
+
 ## UI, books, credentials, and input
 
 ```sh
@@ -22,8 +34,13 @@ sh libs/book/FreeInkBook/test/host/run.sh
 sh libs/book/ContentProtection/test/host/run.sh
 sh libs/hardware/InputManager/test/host/run.sh
 sh libs/hardware/InputManager/test/host/run_metalio.sh
+sh libs/hardware/InputManager/test/host/run_papermono.sh
 sh libs/hardware/HapticManager/test/host/run.sh
 ```
+
+The Paper Mono input suite disables touch and models PMIC click reports. It checks
+that delayed polling does not lengthen clicks and that two-button Power chords
+retain their hold duration, including clicks that overlap a chord.
 
 The book suite also needs `zip`. It uses `sips` or ImageMagick's `convert` for
 JPEG fixtures and optionally Pillow for progressive JPEG fixtures; the related
@@ -58,6 +75,17 @@ profile against a model CW2015: the battery-profile check and upload sequence,
 the voltage and percentage conversion, and the ADC fallback when no gauge
 answers.
 
+The battery suite also covers Picco's SGM41562 status as a single register
+snapshot, three-conversion ADC median, charging endpoint and completion state,
+and the allocation-free `BatteryEstimate` presentation filter. The estimator
+checks include unplug settling, low-voltage correction, failed samples, sleep
+reconciliation and retained-state validation.
+The flash-at-near-full regression covers a 4.340 V cell still reporting active
+charging: its stock voltage estimate can reach 100% without inventing charger
+completion. Lower voltage held on USB alone does not become full over time.
+These are model checks; actual voltage calibration, charge termination and power
+usage still need a Picco.
+
 ## Motion sensors
 
 ```sh
@@ -77,6 +105,7 @@ the configuration file, so the sensor's data path still needs a device.
 ```sh
 sh libs/font/FreeInkFont/test/host/run.sh
 sh libs/font/FreeInkFont/test/host/run_ligature.sh
+sh libs/font/FreeInkFont/test/host/run_gpos.sh
 ```
 
 Covers `FtFont::RenderOptions` (every `HintingMode` plus monochrome) against a
@@ -88,6 +117,11 @@ Covers `FtFont::ligature()`/`ligatureGlyphId()` (GSUB-based) against a real
 bundled font: exact-value assertions for the five standard Latin ligatures,
 the codepoint-vs-glyph-ID contract boundary, deinit()/re-init cache
 invalidation, and a null-pointer safety check on `Gsub::LigatureGlyphId`.
+
+The GPOS suite covers pair formats and extension lookups, GDEF-based LookupFlag
+filtering (glyph classes, mark attachment classes, and mark filtering sets), and
+truncated/corrupt tables under ASan/UBSan. It checks resident and streamed kerning,
+the combined GPOS/GDEF stream budget, and cache release/reinitialization.
 
 ## BLE HID host
 
@@ -110,8 +144,10 @@ sh libs/hardware/FrontlightManager/test/host/run.sh
 Compiles the Picco frontlight backend and real board profile against a register
 model with a wake-settling interval. Covers the first nonzero brightness write,
 off/on level restoration, warm/cool channels, slider updates without repeated
-wake delays, and retry after a failed wake transaction. Physical light output
-and the actual controller settling time still require a device check.
+wake delays, and retry after a failed wake transaction. Sweeps brightness in both
+directions at all 101 warmth settings, checking fine PWM steps, minimum and maximum
+output, disabled channels at zero PWM, and restoration after off/on. Physical light
+output and the actual controller settling time still require a device check.
 
 ## Display drivers
 
@@ -178,3 +214,15 @@ sh libs/network/JsonSax/test/host/run.sh
 
 Checks optional bounded string prefixes, unchanged default overflow handling,
 continued parsing after long strings, and rejection of oversized keys under ASan/UBSan.
+
+## OPDS authentication
+
+```sh
+sh libs/network/Opds/test/host/run.sh
+```
+
+Requires host Expat headers and library. Runs the production OPDS client and
+parsers with a scripted transport under ASan/UBSan. Covers public Atom browsing
+with protected acquisitions, Basic challenge headers and OPDS documents, rejected
+credentials, OAuth login/refresh, and cross-origin challenge rejection. Device
+tests must still verify the consumer's download retry, cancellation, and heap.

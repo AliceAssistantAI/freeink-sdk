@@ -84,13 +84,42 @@ constexpr uint16_t LUT_LEN = 535;
 // 8 pixels of old + new -> two bytes of 2-bit pixels, old in the high bit,
 // MSB-first (stock FUN_422869b4).
 inline void packPixels(uint8_t oldByte, uint8_t newByte, uint8_t* out) {
-  uint16_t v = 0;
-  for (int i = 7; i >= 0; --i) v = static_cast<uint16_t>((v << 2) | (((oldByte >> i) & 1) << 1) | ((newByte >> i) & 1));
-  out[0] = static_cast<uint8_t>(v >> 8);
-  out[1] = static_cast<uint8_t>(v);
+  // Spread four bits into the even positions. A 16-byte flash table replaces
+  // eight per-pixel shifts for every framebuffer byte, preserving wire order.
+  static constexpr uint8_t spread[] = {0x00, 0x01, 0x04, 0x05, 0x10, 0x11, 0x14, 0x15,
+                                       0x40, 0x41, 0x44, 0x45, 0x50, 0x51, 0x54, 0x55};
+  out[0] = static_cast<uint8_t>((spread[oldByte >> 4] << 1) | spread[newByte >> 4]);
+  out[1] = static_cast<uint8_t>((spread[oldByte & 15] << 1) | spread[newByte & 15]);
+}
+
+// 6-bit LUT count: value bits 0..5 on byte bits 4,7,6,1,0,3, active-low.
+inline int lutCount(uint8_t v) {
+  static constexpr uint8_t bits[6] = {4, 7, 6, 1, 0, 3};
+  int n = 0;
+  for (int i = 0; i < 6; ++i) n |= ((~v >> bits[i]) & 1) << i;
+  return n;
 }
 
 }  // namespace
+
+int ssd2677LutDose(const unsigned char* lut, unsigned table) {
+  // Level byte, active-low: white drive on bits 5/3/1, black on bits 2/0/6 (see Ssd2677Luts.h).
+  static constexpr uint8_t white[3] = {5, 3, 1}, black[3] = {2, 0, 6};
+  int dose = 0;
+  for (unsigned group = 0; group < 8; ++group) {
+    const unsigned char* g = lut + 7 + table * 88 + group * 11;
+    int net = 0;
+    for (unsigned phase = 0; phase < 8; ++phase) {
+      if (phase % 4 == 3) continue;
+      const uint8_t levels = pgm_read_byte(&g[1 + phase / 4]);
+      const int frames = lutCount(pgm_read_byte(&g[3 + phase]));
+      if (!((levels >> black[phase % 4]) & 1)) net += frames;
+      if (!((levels >> white[phase % 4]) & 1)) net -= frames;
+    }
+    dose += net * lutCount(pgm_read_byte(&g[0]));
+  }
+  return dose;
+}
 
 uint32_t Ssd2677Driver::spiHz() const {
   return BoardConfig::ACTIVE.displaySpiHz != 0 ? BoardConfig::ACTIVE.displaySpiHz : 20000000;
@@ -147,8 +176,11 @@ void Ssd2677Driver::latchOtpWaveform(EpdBus& bus, uint8_t code) {
 
 void Ssd2677Driver::begin(EpdBus& bus) {
   initPanel(bus);
+  const PanelGeometry g = geometry();
+  _textAa.allocate(true, g.widthBytes, g.height);
 
   _needsInitialFull = true;
+  _grayPending = _grayMaskReady = false;
   // Retained old-plane: this panel takes old+new as one 2bpp burst, so the old
   // plane must exactly equal what is physically on the glass. The host can't
   // supply it — CrossPoint builds single-buffer (EINK_DISPLAY_SINGLE_BUFFER_MODE),
@@ -162,9 +194,17 @@ void Ssd2677Driver::begin(EpdBus& bus) {
 
 void Ssd2677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
   (void)prev;  // unused: single-buffer host passes null; we track our own old plane
+  _textAa.invalidate();
   // First paint after init clears the panel with the full waveform (stock forces
   // mode 0 on the first frame).
   if (_needsInitialFull) mode = RefreshMode::Full;
+  // Gray pixels left by the last gray pass start opposite their target so the
+  // differential waveform drives each of them.
+  if (_grayPending && _old && _lsb) {
+    for (uint32_t i = 0; i < geometry().bufferSize; ++i)
+      _old[i] = (_old[i] & ~_lsb[i]) | (~fb[i] & _lsb[i]);
+  }
+  _grayPending = false;
   if (isSticky()) {
     // OTP waveforms: a full refresh sends old == new (every pixel driven to its
     // level) and powers off; a fast one diffs against the retained old plane
@@ -184,15 +224,40 @@ void Ssd2677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
   // would see old==new on every incremental update and move nothing (the whole
   // reason non-full frames ghosted). _old == nullptr (alloc failed) falls back to
   // an all-white old plane in sendPacked.
+  if (!_old) mode = RefreshMode::Full;
+  // The first frame after a book page still erases reading-depth blacks, so it
+  // keeps the reading waveform (reader menu, footnotes over a page).
+  const bool reading = _readerRefresh || _afterReader;
+  _afterReader = _readerRefresh;
+  // BOOX presents book pages and UI screen redraws with mode 2 and powers off;
+  // only small interaction updates (highlight moves) use mode 3 with the rails on.
+  // A redraw changes over 1/8 of the frame.
+  const uint32_t size = geometry().bufferSize;
+  bool redraw = reading;
+  if (mode == RefreshMode::Fast && !redraw && _old) {
+    uint32_t changed = 0;
+    for (uint32_t i = 0; i < size; ++i) changed += _old[i] != fb[i];
+    redraw = changed > size / 8;
+  }
+  // Undriven blacks fade: on a dark background erased white text shows as deeper
+  // black, and in UI dither old dots show through. Drive every black pixel as
+  // white-to-black so old and fresh black match. In light mode only on UI redraws,
+  // and only where the frame changed: re-driving static text and reader pages
+  // builds up ghosts.
+  if (mode == RefreshMode::Fast && (_darkBackground || (redraw && !reading)) && _old) {
+    for (uint32_t i = 0; i < size; ++i)
+      if (_darkBackground || _old[i] != fb[i]) _old[i] |= static_cast<uint8_t>(~fb[i]);
+  }
+  // Real old plane for every mode: old == new gives each pixel the no-change drive.
   sendPacked(bus, _old, fb);
-  // Stock powers off after every refresh (PON, 0x12, POF), whatever `turnOff` says.
-  (void)turnOff;
-  refreshWith(bus, mode == RefreshMode::Fast ? lut_picco_se0400_fast : lut_picco_se0400_full, true);
-  if (_old) memcpy(_old, fb, geometry().bufferSize);  // new becomes old for the next frame
+  const auto* fastLut = redraw ? lut_picco_se0400_fast : lut_picco_se0400_mode3;
+  const bool keepPower = mode == RefreshMode::Fast && !redraw;
+  refreshWith(bus, mode == RefreshMode::Fast ? fastLut : lut_picco_se0400_full, !keepPower);
+  if (_old) memcpy(_old, fb, size);  // new becomes old for the next frame
   _needsInitialFull = false;
 }
 
-void Ssd2677Driver::sendPacked(EpdBus& bus, const uint8_t* hi, const uint8_t* lo) {
+void Ssd2677Driver::sendPacked(EpdBus& bus, const uint8_t* hi, const uint8_t* lo, bool exclusive) {
   const PanelGeometry g = geometry();
   static uint8_t chunk[1024];
   // The Sticky panel scans rows bottom-to-top relative to the framebuffer
@@ -204,8 +269,10 @@ void Ssd2677Driver::sendPacked(EpdBus& bus, const uint8_t* hi, const uint8_t* lo
   for (uint16_t r = 0; r < g.height; ++r) {
     const uint32_t row = static_cast<uint32_t>(reversed ? g.height - 1 - r : r) * g.widthBytes;
     for (uint16_t xb = 0; xb < g.widthBytes; ++xb) {
-      // hi == nullptr → an all-white (0xFF) old plane (stock's begin-time seed).
-      packPixels(hi ? hi[row + xb] : 0xFF, lo[row + xb], &chunk[n]);
+      // A null plane is all white (0xFF), stock's begin-time seed.
+      const uint8_t low = lo ? lo[row + xb] : 0xFF;
+      const uint8_t high = hi ? hi[row + xb] : 0xFF;
+      packPixels(exclusive ? static_cast<uint8_t>(high & ~low) : high, low, &chunk[n]);
       n += 2;
       if (n == sizeof(chunk)) {
         txn.writeBytes(chunk, n);
@@ -224,12 +291,16 @@ void Ssd2677Driver::powerOffBetweenFrames(EpdBus& bus) {
   _needsPowerOn = true;
 }
 
-void Ssd2677Driver::powerAndRefresh(EpdBus& bus, bool turnOff) {
+void Ssd2677Driver::powerOn(EpdBus& bus) {
   if (_needsPowerOn) {
     bus.cmd(CMD_POWER_ON);
     bus.waitBusy(" SSD2677 power on");
     _needsPowerOn = false;
   }
+}
+
+void Ssd2677Driver::powerAndRefresh(EpdBus& bus, bool turnOff) {
+  powerOn(bus);
   bus.cmd(CMD_REFRESH);
   bus.data(0x00);
   bus.waitRefreshComplete("refresh");
@@ -242,52 +313,126 @@ void Ssd2677Driver::refreshWith(EpdBus& bus, const unsigned char* lut, bool turn
   powerAndRefresh(bus, turnOff);
 }
 
+bool Ssd2677Driver::ensureLsb() {
+  if (!_lsb) _lsb = static_cast<uint8_t*>(heap_caps_malloc(geometry().bufferSize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  return _lsb != nullptr;
+}
+
 void Ssd2677Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
   (void)bus;
+  if (_textAa.active()) { _textAa.stage(0, lsb, 0, geometry().height); return; }
   if (!lsb) return;
-  const uint32_t size = geometry().bufferSize;
-  if (!_lsb) _lsb = static_cast<uint8_t*>(heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-  if (_lsb) memcpy(_lsb, lsb, size);
+  if (!_absoluteGray) ensureLsb();
+  _grayMaskReady = false;
+  if (_lsb) memcpy(_lsb, lsb, geometry().bufferSize);
 }
 
 void Ssd2677Driver::beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode mode, RefreshMode fallback,
                                    bool turnOff) {
-  _absoluteGray = isSticky() && mode != GrayscaleMode::Overlay;
-  if (_absoluteGray) return;  // stock gray4 drives every pixel from any prior state: no base
+  if (mode == GrayscaleMode::Overlay && _readerRefresh && _textAa.ready()) {
+    // The page is presented by displayGray; only a clean needs its own refresh.
+    if (fallback != RefreshMode::Fast || _needsInitialFull) display(bus, fb, nullptr, fallback, false);
+    _absoluteGray = false;
+    _textAa.begin(fb);
+    return;
+  }
+  _textAa.invalidate();
+  _absoluteGray = mode == GrayscaleMode::Absolute;
+  if (_absoluteGray) {
+    _grayPending = false;
+    // The caller still has the B/W base here. On allocation failure display it
+    // before the renderer reuses its framebuffer for the two image planes.
+    if ((!isSticky() && !_old) || !ensureLsb()) display(bus, fb, nullptr, RefreshMode::Full, true);
+    return;
+  }
+  if (isSticky() && mode == GrayscaleMode::Overlay && fallback == RefreshMode::Fast && !_needsInitialFull && _old) {
+    // Give every incoming ink pixel the stock white-to-black pulse, even if
+    // the last B/W base called it black before AA lightened it. For incoming
+    // white, keep the real prior bit so old ink clears and blank paper holds.
+    // The synchronous display below replaces this transition mask with fb.
+    const uint32_t size = geometry().bufferSize;
+    for (uint32_t i = 0; i < size; ++i) _old[i] |= static_cast<uint8_t>(~fb[i]);
+  }
   displayGrayscaleBase(bus, fb, fallback, turnOff);
 }
 
 void Ssd2677Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
+  if (_textAa.active()) { _textAa.stage(1, msb, 0, geometry().height); return; }
   if (!msb || !_lsb) return;
   if (_absoluteGray) {
-    // Stock gray4 (Seeed_GFX2 Driver_SSD2677): level index on the wire, 00 black,
-    // 01 dark, 10 light, 11 white. Absolute planes: LSB = dark bit, MSB = light
-    // bit, so MSB goes high.
-    latchOtpWaveform(bus, OTP_GRAY_ROOM);
-    sendPacked(bus, msb, _lsb);
+    if (isSticky()) {
+      latchOtpWaveform(bus, OTP_GRAY_ROOM);
+      sendPacked(bus, msb, _lsb);
+    } else if (_old) {
+      // Stock powers on before the image upload. Stage it until presentation
+      // so cancellation during plane upload never leaves the rails on. The MSB
+      // approximates the new B/W state. Force a full refresh even on cancellation
+      // because the previous B/W history is no longer available.
+      memcpy(_old, msb, geometry().bufferSize);
+      _needsInitialFull = true;
+    }
     return;
   }
   // Sticky: the B/W base latched an OTP waveform (E0 12 / E6 / A5). Re-run reset
   // + init so the gray LUT runs from the same controller state as on the Picco,
   // which never latches one. Reset leaves the glass as it is.
   if (isSticky()) initPanel(bus);
-  // Stock (FUN_42286a70): MSB mask in the high bit, LSB mask in the low bit.
-  sendPacked(bus, msb, _lsb);
+  // Stock (0x4228b030): MSB mask in the high bit, LSB mask in the low bit.
+  // The Picco's stock AA powers on before the upload (0x4200bad0).
+  if (!isSticky()) powerOn(bus);
+  // lut_picco_se0400_gray (both boards) lightens code 01 by 3 frames and code
+  // 10 by 4 and leaves code 11 undriven. Dark pixels set both masks, so they
+  // go out as 01; light pixels (MSB only) stay 10.
+  sendPacked(bus, msb, _lsb, true);
+  if (!isSticky()) {
+    // The vendor retains the MSB mask to correct the next B/W transition.
+    memcpy(_lsb, msb, geometry().bufferSize);
+    _grayMaskReady = true;
+  }
 }
 
 void Ssd2677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut,
                                 bool factoryMode) {
   (void)lut;
   (void)factoryMode;
+  if (_textAa.active()) {
+    if (!_textAa.compose()) { _textAa.invalidate(); _needsInitialFull = true; return; }
+    // Text codes: white plane in the high bit, gray / driven-white plane in the low bit.
+    // Sticky: a latched OTP waveform is cleared by reset + init before a RAM
+    // table runs, as for its overlay AA. The Picco powers on before the upload.
+    if (!isSticky()) powerOn(bus);
+    else if (_latchedWaveform != 0 && _latchedWaveform != LATCH_REINIT) initPanel(bus);
+    sendPacked(bus, _textAa.high(), _textAa.low());
+    refreshWith(bus, lut_picco_se0400_text, true);  // stock reader pages power off
+    if (isSticky()) _latchedWaveform = LATCH_REINIT;
+    const auto* text = lut_picco_se0400_text;
+    _textAa.finish(ssd2677LutDose(text, 1), ssd2677LutDose(text, 2), ssd2677LutDose(text, 3), ssd2677LutDose(text, 4));
+    // B/W history: the page's base, with its gray pixels flagged so the next
+    // B/W frame drives each of them to its target.
+    const uint32_t size = geometry().bufferSize;
+    if (_old) memcpy(_old, _textAa.base(), size);
+    if (_old && ensureLsb()) {
+      for (uint32_t i = 0; i < size; ++i) _lsb[i] = static_cast<uint8_t>(_textAa.low()[i] & ~_textAa.high()[i]);
+      _grayPending = true;
+    } else {
+      _needsInitialFull = true;
+    }
+    _grayMaskReady = false;
+    _afterReader = true;  // the next B/W frame erases reading-depth ink
+    return;
+  }
   if (_absoluteGray) {
     _absoluteGray = false;
-    if (!_lsb) {
-      display(bus, fb, nullptr, RefreshMode::Full, turnOff);
-      return;
-    }
-    // Stock powers off after gray4. The glass now holds gray a differential
+    if (!_lsb || (!isSticky() && !_old)) return;  // beginGrayscale presented the B/W fallback.
+    // Stock powers off after the image. The glass now holds gray a differential
     // refresh can't clear, so the next B/W frame is a full one.
-    powerAndRefresh(bus, true);
+    if (isSticky()) {
+      powerAndRefresh(bus, true);
+    } else {
+      powerOn(bus);
+      sendPacked(bus, _old, _lsb);
+      refreshWith(bus, lut_picco_se0400_image, turnOff);
+    }
     _needsInitialFull = true;
     return;
   }
@@ -301,25 +446,24 @@ void Ssd2677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
     return;
   }
   if (!_lsb) {  // planes never staged: plain B/W
-    display(bus, fb, nullptr, RefreshMode::Full, turnOff);
+    // An inverted base is already on the glass; `fb` holds the logical frame.
+    if (!_darkBackground) display(bus, fb, nullptr, RefreshMode::Full, turnOff);
     return;
   }
   refreshWith(bus, lut_picco_se0400_gray, true);
-  // NB: do NOT force the next frame to a full refresh here. Every reader page in
-  // AA mode is a gray frame, so forcing a full on the following page flashed the
-  // whole screen black on every page turn. The retained `_old` still holds the
-  // B/W base drawn before this overlay, so the next page diffs against it
-  // correctly; CrossPoint schedules its own periodic full refreshes to clean any
-  // AA-edge residual (stock does the same — its gray present sets no full flag).
+  _grayPending = _grayMaskReady;
+  _grayMaskReady = false;
+  // Preserve the base outside the gray mask; masked pixels are driven on the next frame.
+}
+
+void Ssd2677Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
+  // A skipped text pass still owes the caller its deferred B/W page.
+  if (_textAa.active()) display(bus, bw ? bw : _textAa.base(), nullptr, RefreshMode::Fast, true);
 }
 
 void Ssd2677Driver::deepSleep(EpdBus& bus) {
-  // Sticky stock powers the rails off first if they are on.
-  if (isSticky() && !_needsPowerOn) {
-    bus.cmd(CMD_POWER_OFF);
-    bus.data(0x00);
-    bus.waitBusy(" SSD2677 power off");
-  }
+  _textAa.invalidate();
+  powerOffBetweenFrames(bus);
   // Stock (FUN_4200b608): 0x07 with the 0xA5 check code.
   bus.cmd(CMD_DEEP_SLEEP);
   bus.data(0xA5);
