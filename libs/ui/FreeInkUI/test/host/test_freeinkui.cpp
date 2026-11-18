@@ -4588,6 +4588,62 @@ void testHeaderLeadingButton() {
   CHECK_EQ(plain.count(), 0u);
 }
 
+// Where a caller may start its own words beside the leading button. CrossPlay's
+// Study draws its card count in the theme's band; it started at title.x, which
+// for a centred title is the band's margin, and "6 LEFT" was drawn over the
+// back arrow. textLeft is where a left-aligned title would start, whatever the
+// title's own alignment.
+void testHeaderReportsWhereWordsStart() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  const auto layoutOf = [&](const bool centred, const bool styleCentred, const bool drawnButton, const bool button,
+                            const int16_t sidePadding) {
+    InteractionBuffer<8> interactions;
+    Frame<8> frame(draw, device, input, interactions);
+    HeaderProps props;
+    props.title = "";
+    props.centered = centred;
+    if (styleCentred) props.titleText.align = TextAlign::Center;
+    props.sidePadding = sidePadding;
+    if (button) {
+      props.leadingIcon = lucideDeleteIcon28();
+      props.leadingAction = 500;
+      if (drawnButton) {
+        props.leadingStyles.normal.border = Paint::solid(Color::Black);
+        props.leadingStyles.normal.borderWidth = 2;
+      } else {
+        // A bare icon: set, but nothing drawn around it.
+        props.leadingStyles.explicitlySet = true;
+      }
+    }
+    HeaderLayout layout;
+    props.layoutOut = &layout;
+    header(frame, Rect{0, 0, 240, 44}, props);
+    return layout;
+  };
+  for (const bool drawn : {false, true}) {
+    for (const int16_t pad : {static_cast<int16_t>(6), static_cast<int16_t>(18)}) {
+      const HeaderLayout left = layoutOf(false, false, drawn, true, pad);
+      // A left-aligned title starts after the button, and textLeft is its x.
+      CHECK(left.title.x > left.leading.x);
+      CHECK_EQ(left.textLeft, left.title.x);
+      // Centred, by the flag or by the style: the title keeps the band and
+      // starts at the margin, and textLeft is still after the button.
+      for (const bool byStyle : {false, true}) {
+        const HeaderLayout centred = layoutOf(!byStyle, byStyle, drawn, true, pad);
+        CHECK_EQ(centred.title.x, pad);
+        CHECK_EQ(centred.textLeft, left.title.x);
+        CHECK(centred.textLeft > centred.leading.x + centred.leading.width / 2);
+      }
+    }
+  }
+  // No button: nothing to clear, textLeft is the title's own x.
+  const HeaderLayout bare = layoutOf(true, false, false, false, 18);
+  CHECK_EQ(bare.leading.width, 0);
+  CHECK_EQ(bare.textLeft, bare.title.x);
+}
+
 void testScreenKeyboardUsesResponsiveHeight() {
   FakeDrawTarget draw;
   DeviceContext device{800, 480};
@@ -6305,6 +6361,7 @@ int main() {
   testTouchHoldRouter();
   testKeyboardBottomHitOverflow();
   testHeaderLeadingButton();
+  testHeaderReportsWhereWordsStart();
   testScreenKeyboardUsesResponsiveHeight();
   testResponsiveKeyboardSizing();
   testKeyboardTypography();

@@ -31,6 +31,12 @@ struct HeaderStatusProps {
 struct HeaderLayout {
   Rect leading{};  // the leading button's box; width 0 when there is none
   Rect title{};    // the rect the title is laid out in (alignment applied by its style)
+  // Where a caller's left-aligned word may start: after the leading button, by
+  // the arithmetic a left-aligned title uses, so it equals title.x when the
+  // title is left-aligned. A centred title keeps the whole band, which makes
+  // its title.x the band's margin, under the leading button: start there and
+  // the word is drawn over the button.
+  int16_t textLeft = 0;
 };
 
 struct HeaderProps {
@@ -173,6 +179,10 @@ void header(Frame<MaxInteractions>& frame, Rect rect, const HeaderProps& props) 
     if (maxWidth < content.width) content.width = maxWidth;
   }
 
+  // How far a left-aligned title starts past the content's left edge to clear
+  // the leading button. Worked out whatever the title's alignment, because a
+  // caller drawing its own words beside the button needs it either way.
+  int16_t leadingInset = 0;
   const BitmapRef leading = props.leadingIcon ? props.leadingIcon : resolveBitmap(frame.assets(), props.leadingIconAsset);
   if (leading && props.leadingAction != NO_ACTION) {
     const int16_t btn =
@@ -195,17 +205,16 @@ void header(Frame<MaxInteractions>& frame, Rect rect, const HeaderProps& props) 
     // an outline is ink in the band, so the title starts after its box. A
     // centered title keeps the full band so it lines up across screens with
     // and without a back button.
-    if (!centeredTitle) {
-      const StyleSet face = props.leadingStyles.unset() ? defaultButtonStyles() : props.leadingStyles;
-      const bool drawn = face.normal.background.kind != PaintKind::None ||
-                         (face.normal.borderWidth > 0 && face.normal.border.kind != PaintKind::None);
-      const int16_t iconEnd =
-          drawn ? static_cast<int16_t>(4 + btn) : static_cast<int16_t>(4 + (btn + leading.width) / 2);
-      const int16_t inset = static_cast<int16_t>(iconEnd + 6 - sidePad);
-      if (inset > 0) {
-        content.x = static_cast<int16_t>(content.x + inset);
-        content.width = static_cast<int16_t>(content.width - inset);
-      }
+    const StyleSet face = props.leadingStyles.unset() ? defaultButtonStyles() : props.leadingStyles;
+    const bool drawn = face.normal.background.kind != PaintKind::None ||
+                       (face.normal.borderWidth > 0 && face.normal.border.kind != PaintKind::None);
+    const int16_t iconEnd =
+        drawn ? static_cast<int16_t>(4 + btn) : static_cast<int16_t>(4 + (btn + leading.width) / 2);
+    const int16_t inset = static_cast<int16_t>(iconEnd + 6 - sidePad);
+    if (inset > 0) leadingInset = inset;
+    if (!centeredTitle && leadingInset > 0) {
+      content.x = static_cast<int16_t>(content.x + leadingInset);
+      content.width = static_cast<int16_t>(content.width - leadingInset);
     }
   }
   const BitmapRef trailing =
@@ -257,6 +266,7 @@ void header(Frame<MaxInteractions>& frame, Rect rect, const HeaderProps& props) 
   if (props.layoutOut) {
     props.layoutOut->title =
         Rect{content.x, static_cast<int16_t>(content.y + props.titleOffsetY), content.width, content.height};
+    props.layoutOut->textLeft = static_cast<int16_t>(content.x + (centeredTitle ? leadingInset : 0));
   }
   if (props.title) {
     int16_t titleY = static_cast<int16_t>(content.y + props.titleOffsetY);
