@@ -24,6 +24,15 @@ struct HeaderStatusProps {
   bool clockCentered = false;
 };
 
+// Where header() put the things in its band, for code that draws beside them.
+// A caller that places its own word in the band (a count, a pill) reads its
+// row from here instead of working the row out again: two pieces of code that
+// each find "the middle of the band" find two different middles.
+struct HeaderLayout {
+  Rect leading{};  // the leading button's box; width 0 when there is none
+  Rect title{};    // the rect the title is laid out in (alignment applied by its style)
+};
+
 struct HeaderProps {
   const char* title = nullptr;
   const char* subtitle = nullptr;
@@ -91,10 +100,13 @@ struct HeaderProps {
   // How far the band's background and border extend past `rect` on each side,
   // so the chrome can span the screen while the content stays inset.
   Insets bleed{};
+  // Filled with the layout header() used, when set. See HeaderLayout.
+  HeaderLayout* layoutOut = nullptr;
 };
 
 template <size_t MaxInteractions>
 void header(Frame<MaxInteractions>& frame, Rect rect, const HeaderProps& props) {
+  if (props.layoutOut) *props.layoutOut = HeaderLayout{};
   StyleSet styles = props.styles.unset() ? defaultPopupStyles() : props.styles;
   const BoxStyle& style = styles.resolve(StateNormal);
   const Rect chrome{static_cast<int16_t>(rect.x - props.bleed.left), static_cast<int16_t>(rect.y - props.bleed.top),
@@ -172,9 +184,10 @@ void header(Frame<MaxInteractions>& frame, Rect rect, const HeaderProps& props) 
     back.styles = props.leadingStyles;
     back.radius = props.leadingRadius;
     back.minTouchSize = props.minTouchSize;
-    button(frame,
-           Rect{static_cast<int16_t>(rect.x + 4), static_cast<int16_t>(rect.y + 4 + props.actionOffsetY), btn, btn},
-           back);
+    const Rect backBox{static_cast<int16_t>(rect.x + 4), static_cast<int16_t>(rect.y + 4 + props.actionOffsetY), btn,
+                       btn};
+    button(frame, backBox, back);
+    if (props.layoutOut) props.layoutOut->leading = backBox;
     // The button replaces the side padding at the leading edge rather than
     // stacking on top of it. A non-centered title tucks in just right of a
     // bare icon's ink, since its button box is invisible and anchoring on it
@@ -241,6 +254,10 @@ void header(Frame<MaxInteractions>& frame, Rect rect, const HeaderProps& props) 
   // align); `centered` remains the navHeader convenience override.
   TextStyle titleStyle = props.titleText;
   if (props.centered) titleStyle.align = TextAlign::Center;
+  if (props.layoutOut) {
+    props.layoutOut->title =
+        Rect{content.x, static_cast<int16_t>(content.y + props.titleOffsetY), content.width, content.height};
+  }
   if (props.title) {
     int16_t titleY = static_cast<int16_t>(content.y + props.titleOffsetY);
     Rect titleRect{content.x, titleY, content.width, content.height};
