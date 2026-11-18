@@ -3695,6 +3695,38 @@ void testLvglParityControls() {
   CHECK(draw.countKind(FakeDrawTarget::Op::Text) >= 8u);
 }
 
+// A localized Shift label the key cannot hold is not drawn cut short: an
+// eleven-key row (QwertzDe) leaves its 1.5-unit Shift key less room than an
+// English ten-key row, and "Shift" in a 12px-wide face was drawn "Sh...". The
+// key falls back to its arrow; where the word fits, the word stays.
+void testKeyboardShiftLabelFallsBackToTheArrow() {
+  const BitmapRef arrow = lucideArrowBigUpIcon24();
+  const auto arrows = [&](KeyboardLayoutId id, int16_t charWidth) {
+    FakeDrawTarget draw;
+    draw.charWidth = charWidth;
+    DeviceContext device = makeDevice();
+    InputSnapshot input;
+    InteractionBuffer<56> interactions;
+    Frame<56> frame(draw, device, input, interactions);
+    KeyboardProps props;
+    props.layout = &builtinKeyboardLayout(id, false, false, true, false);
+    props.keyAction = 1;
+    props.shiftLabel = "Shift";
+    props.padding = Insets{0, 0, 0, 0};
+    props.gap = 0;
+    keyboard(frame, Rect{14, 400, 451, 280}, props);
+    size_t n = 0;
+    for (size_t i = 0; i < draw.opCount; ++i) n += draw.ops[i].bitmapData == arrow.data ? 1u : 0u;
+    return n;
+  };
+  // 451px / 11 keys x 1.5 = 61px, 53px inside the button padding.
+  CHECK_EQ(arrows(KeyboardLayoutId::QwertzDe, 10), 0u);  // "Shift" is 50px: the word.
+  CHECK_EQ(arrows(KeyboardLayoutId::QwertzDe, 12), 1u);  // 60px: the arrow, not "Sh...".
+  // 451px / 10 keys x 1.5 = 67px, 59px inside: English keeps the word longer.
+  CHECK_EQ(arrows(KeyboardLayoutId::QwertyEn, 11), 0u);
+  CHECK_EQ(arrows(KeyboardLayoutId::QwertyEn, 12), 1u);
+}
+
 void testQwertyKeyboardComponent() {
   FakeDrawTarget draw;
   DeviceContext device = makeDevice();
@@ -6446,6 +6478,7 @@ int main() {
   testEReaderSettingsComponents();
   testLvglParityControls();
   testQwertyKeyboardComponent();
+  testKeyboardShiftLabelFallsBackToTheArrow();
   testLocalizedKeyboardLayout();
   testGermanAndFrenchLetters();
   testCompactLayoutsMatchBuiltin();

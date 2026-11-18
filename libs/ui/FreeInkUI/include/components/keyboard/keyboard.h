@@ -658,6 +658,15 @@ void keyboard(Frame<MaxInteractions>& frame, Rect rect, const KeyboardProps& pro
       bp.text.align = TextAlign::Center;
       bp.text.maxLines = 1;
     }
+    // A localized control label is only worth drawing whole. One the key
+    // cannot hold would be cut by the renderer ("Sh..." on an eleven-key row,
+    // where "Shift" is wider than a 1.5-unit key), so it falls back to the
+    // layout's own label, and a Shift key with none draws its arrow below.
+    const int16_t labelRoom = static_cast<int16_t>(keyRect.width - bp.padding.left - bp.padding.right);
+    const auto fits = [&](const char* text) {
+      return frame.target().measureText(bp.text.font, text, bp.text).width <= labelRoom;
+    };
+    if (bp.label && bp.label != label && !fits(bp.label)) bp.label = hasAltHint ? nullptr : label;
     bp.styles = styles;
     bp.minTouchSize = props.minTouchSize;
     bp.hitPadding.bottom = rowHitOverflow;
@@ -677,8 +686,9 @@ void keyboard(Frame<MaxInteractions>& frame, Rect rect, const KeyboardProps& pro
     button(frame, keyRect, bp);
 
     // Delete, Shift, and the script switch use universal glyphs. Symbol-page
-    // Shift keys keep their explicit "#+=" / "123" labels.
-    const bool iconShift = key.kind == KeyKind::Shift && !key.label && !props.shiftLabel;
+    // Shift keys keep their explicit "#+=" / "123" labels, and a letter-page
+    // Shift key draws the arrow unless a label it can hold was supplied.
+    const bool iconShift = key.kind == KeyKind::Shift && !bp.label;
     if (key.kind == KeyKind::Delete || key.kind == KeyKind::Lang || iconShift) {
       const Paint ink = styles.resolve(frame.stateFor(action, key.value, state)).foreground;
       const int16_t maxSize = keyRect.height < keyRect.width ? keyRect.height : keyRect.width;
