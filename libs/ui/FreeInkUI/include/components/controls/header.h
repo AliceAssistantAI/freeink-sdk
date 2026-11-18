@@ -176,13 +176,18 @@ void header(Frame<MaxInteractions>& frame, Rect rect, const HeaderProps& props) 
            Rect{static_cast<int16_t>(rect.x + 4), static_cast<int16_t>(rect.y + 4 + props.actionOffsetY), btn, btn},
            back);
     // The button replaces the side padding at the leading edge rather than
-    // stacking on top of it, and a non-centered title tucks in just right of
-    // the icon's ink: the icon centers in the square, so anchoring on the
-    // (usually invisible) button box would leave (btn - icon)/2 of dead
-    // space. A centered title keeps the full band so it lines up across
-    // screens with and without a back button.
+    // stacking on top of it. A non-centered title tucks in just right of a
+    // bare icon's ink, since its button box is invisible and anchoring on it
+    // would leave (btn - icon)/2 of dead space; a button that draws a fill or
+    // an outline is ink in the band, so the title starts after its box. A
+    // centered title keeps the full band so it lines up across screens with
+    // and without a back button.
     if (!centeredTitle) {
-      const int16_t iconEnd = static_cast<int16_t>(4 + (btn + leading.width) / 2);
+      const StyleSet face = props.leadingStyles.unset() ? defaultButtonStyles() : props.leadingStyles;
+      const bool drawn = face.normal.background.kind != PaintKind::None ||
+                         (face.normal.borderWidth > 0 && face.normal.border.kind != PaintKind::None);
+      const int16_t iconEnd =
+          drawn ? static_cast<int16_t>(4 + btn) : static_cast<int16_t>(4 + (btn + leading.width) / 2);
       const int16_t inset = static_cast<int16_t>(iconEnd + 6 - sidePad);
       if (inset > 0) {
         content.x = static_cast<int16_t>(content.x + inset);
