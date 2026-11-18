@@ -56,6 +56,7 @@ class FakeDrawTarget : public DrawTarget {
     TextAlign align = TextAlign::Left;
     const uint8_t* bitmapData = nullptr;
     bool bold = false;
+    char text[8]{};  // the first bytes of a text run, for asserting on a key cap
   };
 
   Op ops[256]{};
@@ -64,14 +65,27 @@ class FakeDrawTarget : public DrawTarget {
   bool drewForbiddenLabel = false;
   int16_t charWidth = 6;
   int16_t boldCharWidth = 0;
+  // One letter drawn wider than the rest, as a face's "W" is.
+  char wideChar = 0;
+  int16_t wideCharWidth = 0;
+  // A narrower cut in one slot, for a component that steps down.
+  FontId narrowFont = 0xFF;
+  int16_t narrowCharWidth = 0;
   int16_t lineH = 12;
   int16_t fontLineH[DisplayTarget::FONT_SLOTS]{};
 
   Size measureText(FontId font, const char* text, TextStyle style) const override {
     if (text != nullptr && std::strcmp(text, "must-not-measure") == 0)
       measuredForbiddenLabel = true;
-    const int16_t width = style.bold && boldCharWidth > 0 ? boldCharWidth : charWidth;
-    return Size{static_cast<int16_t>(width * static_cast<int16_t>(std::strlen(text))), lineHeight(font)};
+    int16_t width = style.bold && boldCharWidth > 0 ? boldCharWidth : charWidth;
+    if (font == narrowFont && narrowCharWidth > 0) width = narrowCharWidth;
+    int16_t total = static_cast<int16_t>(width * static_cast<int16_t>(std::strlen(text)));
+    if (wideChar != 0 && font != narrowFont) {
+      for (const char* c = text; *c; ++c) {
+        if (*c == wideChar) total = static_cast<int16_t>(total + wideCharWidth - width);
+      }
+    }
+    return Size{total, lineHeight(font)};
   }
   int16_t lineHeight(FontId font) const override {
     return font < DisplayTarget::FONT_SLOTS && fontLineH[font] > 0 ? fontLineH[font] : lineH;
@@ -98,6 +112,7 @@ class FakeDrawTarget : public DrawTarget {
       ops[opCount - 1].font = style.font;
       ops[opCount - 1].align = style.align;
       ops[opCount - 1].bold = style.bold;
+      if (text != nullptr) std::strncpy(ops[opCount - 1].text, text, sizeof(ops[opCount - 1].text) - 1);
     }
   }
   void bitmap(Rect rect, BitmapRef bitmap, BitmapMode, Paint foreground, Rotation rotation) override {
@@ -3727,6 +3742,54 @@ void testKeyboardShiftLabelFallsBackToTheArrow() {
   CHECK_EQ(arrows(KeyboardLayoutId::QwertyEn, 12), 1u);
 }
 
+// A letter key always shows its letter. German search under a 10px key gap
+// drew its capital W as "...": eleven keys in 451px leave 31px a key and 23
+// inside the button's padding, and W is 23.2px in the X4 Pro's body face. The
+// rule that keeps a control label from being cut did not reach a key's own
+// label, so the renderer cut it. A letter wider than the padded room takes the
+// key's full width; one wider than the key steps down to the hint's face.
+void testKeyboardLetterIsAlwaysDrawnWhole() {
+  const auto capW = [](int16_t wide, FontId* fontOut) {
+    FakeDrawTarget draw;
+    draw.charWidth = 14;
+    draw.wideChar = 'W';
+    draw.wideCharWidth = wide;
+    draw.narrowFont = FONT_SLOT_SMALL;
+    draw.narrowCharWidth = 10;
+    DeviceContext device = makeDevice();
+    InputSnapshot input;
+    InteractionBuffer<56> interactions;
+    Frame<56> frame(draw, device, input, interactions);
+    KeyboardProps props;
+    props.layout = &builtinKeyboardLayout(KeyboardLayoutId::QwertzDe, true, false, true, false);
+    props.keyAction = 1;
+    props.labelText.font = FONT_SLOT_BODY;
+    props.altText.font = FONT_SLOT_SMALL;
+    props.padding = Insets{0, 0, 0, 0};
+    props.gap = 10;
+    keyboard(frame, Rect{14, 400, 451, 300}, props);
+    for (size_t i = 0; i < draw.opCount; ++i) {
+      const FakeDrawTarget::Op& op = draw.ops[i];
+      if (op.kind != FakeDrawTarget::Op::Text || std::strcmp(op.text, "W") != 0) continue;
+      *fontOut = op.font;
+      TextStyle style;
+      style.font = op.font;
+      return static_cast<int>(op.rect.width) - draw.measureText(op.font, "W", style).width;
+    }
+    return -1000;  // no W drawn at all
+  };
+  FontId font = 0xFF;
+  // 26px: wider than the 23 inside the padding, narrower than the 31px key.
+  CHECK(capW(26, &font) >= 0);
+  CHECK_EQ(font, static_cast<FontId>(FONT_SLOT_BODY));
+  // 34px: wider than the key; the hint's face holds it.
+  CHECK(capW(34, &font) >= 0);
+  CHECK_EQ(font, static_cast<FontId>(FONT_SLOT_SMALL));
+  // A letter that fits is drawn as it always was.
+  CHECK(capW(14, &font) >= 0);
+  CHECK_EQ(font, static_cast<FontId>(FONT_SLOT_BODY));
+}
+
 void testQwertyKeyboardComponent() {
   FakeDrawTarget draw;
   DeviceContext device = makeDevice();
@@ -6479,6 +6542,7 @@ int main() {
   testLvglParityControls();
   testQwertyKeyboardComponent();
   testKeyboardShiftLabelFallsBackToTheArrow();
+  testKeyboardLetterIsAlwaysDrawnWhole();
   testLocalizedKeyboardLayout();
   testGermanAndFrenchLetters();
   testCompactLayoutsMatchBuiltin();

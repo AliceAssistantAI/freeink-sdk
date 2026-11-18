@@ -667,6 +667,22 @@ void keyboard(Frame<MaxInteractions>& frame, Rect rect, const KeyboardProps& pro
       return frame.target().measureText(bp.text.font, text, bp.text).width <= labelRoom;
     };
     if (bp.label && bp.label != label && !fits(bp.label)) bp.label = hasAltHint ? nullptr : label;
+    // A key's own label is always drawn whole. One wider than the room inside
+    // the padding takes the key's full width ("W" is 23.2px in the X4 Pro's
+    // body face, and an eleven-key row at a 10px gap leaves 23 inside the
+    // padding), and one wider than the key itself steps down to the hint's
+    // face. The renderer would otherwise cut it to an ellipsis, and a letter
+    // key would show no letter.
+    if (bp.label && bp.label == label && !fits(bp.label)) {
+      int16_t wide = frame.target().measureText(bp.text.font, bp.label, bp.text).width;
+      if (wide > keyRect.width) {
+        bp.text.font = props.altText.font;
+        wide = frame.target().measureText(bp.text.font, bp.label, bp.text).width;
+      }
+      const int16_t spare = static_cast<int16_t>(keyRect.width > wide ? keyRect.width - wide : 0);
+      bp.padding.left = static_cast<int16_t>(spare / 2);
+      bp.padding.right = static_cast<int16_t>(spare - spare / 2);
+    }
     bp.styles = styles;
     bp.minTouchSize = props.minTouchSize;
     bp.hitPadding.bottom = rowHitOverflow;
