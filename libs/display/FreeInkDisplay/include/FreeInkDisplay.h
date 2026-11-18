@@ -204,6 +204,9 @@ class FreeInkDisplay {
   // True when the selected driver can use an ordinary deferred B/W refresh as
   // the base for a following grayscale pass.
   bool supportsAsyncGrayscaleBase() const;
+  bool supportsDeferredGrayscaleBase() const;
+  // Framebuffer must remain unchanged until waitRefreshComplete().
+  bool displayGrayscaleBaseAsync(RefreshMode fallback = FAST_REFRESH);
 
   // ------------------------------------------------------------------------
   // CrossPoint EInkDisplay compatibility surface.
@@ -283,6 +286,15 @@ class FreeInkDisplay {
 
   // Hint the X3 policy to run a one-shot full resync on next update.
   void requestResync(uint8_t settlePasses = 0);
+  // True while book pages are presented (see PanelDriver::setReaderRefresh).
+  void setReaderRefresh(bool reading);
+  // One-shot work to run while the next display call's page-turn waveform
+  // drives the panel; it lasts for that one call. It must not touch the
+  // display or write its frame buffer, and runs with the caller's locks held
+  // (see PanelDriver::setRefreshIdleHook). Only drivers that support it run it.
+  void setRefreshIdleHook(void (*hook)(void* ctx), void* ctx);
+  // Physical-pixel rectangle; restore=true removes the overlay from the retained gray image.
+  bool displayRetainedGrayscaleOverlay(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool restore = false);
   void skipInitialResync();
   void beginDisplayWork();
   void abortPostRefresh();
@@ -483,6 +495,8 @@ class FreeInkDisplay {
   bool _singleBufferFastDiff = false;
   bool _fastGrayscaleLut = false;
   bool _inverted = false;
+  // Overlay grayscale passes are allowed in the current polarity.
+  bool grayAllowed() const;
   bool _inversionDirty = false;
 
   // Runtime display geometry (seeded from the driver at begin()).
