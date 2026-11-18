@@ -24,6 +24,9 @@ struct HeaderStatusProps {
   bool clockCentered = false;
 };
 
+// The trailing button's distance from the band's right edge.
+constexpr int16_t kHeaderTrailingInset = 12;
+
 // Where header() put the things in its band, for code that draws beside them.
 // A caller that places its own word in the band (a count, a pill) reads its
 // row from here instead of working the row out again: two pieces of code that
@@ -60,8 +63,8 @@ struct HeaderProps {
   StyleSet leadingStyles{};
   uint8_t leadingRadius = 0;
   // The leading button's distance from the band's left edge. The trailing
-  // button keeps 12 from the right; a band that wants the two to mirror sets
-  // this to match.
+  // button keeps kHeaderTrailingInset from the right; a band that wants the
+  // two to mirror sets this to it.
   int16_t leadingInset = 4;
   // Trailing action button on the right edge (a "Save"/"Done" mirroring the
   // leading back button). Label, icon, or both. Occupies the same slot as
@@ -234,7 +237,7 @@ void header(Frame<MaxInteractions>& frame, Rect rect, const HeaderProps& props) 
     }
     // The battery sits in the corner headroom above this row, so the
     // trailing buttons keep the right edge.
-    const int16_t trailingAnchor = static_cast<int16_t>(rect.right() - 12);
+    const int16_t trailingAnchor = static_cast<int16_t>(rect.right() - kHeaderTrailingInset);
     const int16_t trailingY = static_cast<int16_t>(rect.y + 4 + props.actionOffsetY);
     ButtonProps action;
     action.label = props.trailingLabel;
