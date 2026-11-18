@@ -1798,14 +1798,17 @@ void testListNavScrollsClippedListWithinRowEstimate() {
   CHECK_EQ(scrollFills(), 2); // the rebuild paints the track and its thumb
   // Thumb sized by the MEASURED page (6 of 8), not the 10-row estimate: the
   // estimate would make drawListScrollIndicator() drop the indicator entirely.
-  CHECK(hasFill(Rect{477, 0, 3, 150})); // 200 * 6 / 8, at top 0
+  // The track ends with the last whole row (six 32px rows: 192), not at the
+  // list's 200px bottom, so the thumb is 192 * 6 / 8 at top 0.
+  CHECK(hasFill(Rect{477, 0, 3, 192}));
+  CHECK(hasFill(Rect{477, 0, 3, 144}));
 
   // Swipe scrolling reaches the clipped tail instead of snapping back to 0.
   CHECK(nav.scrollBy(nav.pageRows(), 8));
   CHECK_EQ(nav.top, 2); // 8 items - 6 measured rows
   CHECK(build(7));      // the last item draws and takes touches
   CHECK_EQ(nav.top, 2); // list() kept the scrolled viewport
-  CHECK(hasFill(Rect{477, 50, 3, 150})); // thumb tracked the viewport
+  CHECK(hasFill(Rect{477, 48, 3, 144})); // thumb tracked the viewport: 192 * 2 / 8
 
   // The measurement belongs to the row set it was taken on. A caller that
   // reloads its data keeps the same nav. Seven wrapped items still overflow;
