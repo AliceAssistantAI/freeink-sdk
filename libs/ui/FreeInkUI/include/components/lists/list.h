@@ -701,6 +701,9 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
                               ? props.headerRowHeight
                               : static_cast<int16_t>(headerLh + 4);
   int16_t cursorY = rowArea.y;
+  // The bottom of the last whole row laid out: the scroll track ends there,
+  // not at the foot of a rect that is rarely a whole number of rows tall.
+  int16_t rowsBottom = rowArea.y;
   uint16_t consumedIndexes = 0; // item AND header indexes laid out from top
   bool selectedDrawn = false;
   bool previousWasRow = false;
@@ -788,6 +791,8 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
         selectedDrawn = true;
     }
     Rect row{rowArea.x, cursorY, rowArea.width, itemH};
+    if (!partial && row.bottom() > rowsBottom)
+      rowsBottom = row.bottom();
     if (previousWasRow && !hasSectionHeading && props.separatorPaint.kind != PaintKind::None &&
         rowArea.width > sidePad * 2) {
       frame.target().fill(
@@ -1019,7 +1024,10 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
 
   if (props.scrollIndicator && consumedIndexes > 0 &&
       (top > 0 || consumedIndexes < props.count)) {
-    drawListScrollIndicator(frame.target(), rect, props.count, consumedIndexes, top,
+    const Rect track = rowsBottom > rect.y
+                           ? Rect{rect.x, rect.y, rect.width, static_cast<int16_t>(rowsBottom - rect.y)}
+                           : rect;
+    drawListScrollIndicator(frame.target(), track, props.count, consumedIndexes, top,
                             scrollW, scrollLeft ? 1 : 0, scrollInset);
   }
 
