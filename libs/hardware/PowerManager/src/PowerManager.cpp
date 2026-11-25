@@ -60,6 +60,16 @@ bool PowerManager::armPowerButtonWakeup() {
 
   // Hold the idle level with the opposite pull so the line is defined in sleep.
   pinMode(pin, activeHigh ? INPUT_PULLDOWN : INPUT_PULLUP);
+  // Hold the pad THROUGH sleep, exactly as Seeed's official Sticky low-power
+  // example does (gpio_hold_en on PIN_WAKE_BUTTON before esp_deep_sleep_start).
+  // deepSleep() calls esp_sleep_config_gpio_isolate(), which strips the pull
+  // and input config from every pad that is not held — the wake pad included —
+  // so without this hold the ext1 comparator has no defined idle level on the
+  // line and a press never wakes: the device sleeps and ignores every button.
+  // Held pads are skipped by the isolation (same mechanism chargeEnable uses).
+  // The hold survives into the wake boot; holdPowerRails() releases it.
+  gpio_hold_dis(static_cast<gpio_num_t>(pin));
+  gpio_hold_en(static_cast<gpio_num_t>(pin));
   armWakeOnPins(1ULL << pin, /*wakeLow=*/!activeHigh);
   return true;
 }

@@ -2133,6 +2133,14 @@ inline void holdPowerRails() {
     pinMode(pin, OUTPUT);
     digitalWrite(pin, HIGH);
   }
+  // The wake-pin pad is held across sleep (see PowerManager::armPowerButton-
+  // Wakeup) to survive esp_sleep_config_gpio_isolate(); a hold survives the
+  // wake boot like the latch holds above, so release it before anything uses
+  // the pin digitally again. Nothing is driven — the pad returns to whatever
+  // the input stack configures.
+  if (const int8_t wp = ACTIVE.input.power; wp >= 0) {
+    gpio_hold_dis(static_cast<gpio_num_t>(wp));
+  }
   // Charger enable (see PowerConfig::chargeEnable). Held with gpio_hold_en so the
   // level survives esp_sleep_config_gpio_isolate() and deep sleep (PowerManager
   // calls gpio_deep_sleep_hold_en() before sleeping) — the charger must stay
