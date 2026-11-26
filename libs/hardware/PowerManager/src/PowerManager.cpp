@@ -5,6 +5,7 @@
 #include <driver/gpio.h>
 #include <esp_sleep.h>
 #include <esp_system.h>
+#include <esp_rom_sys.h>
 #include <soc/soc_caps.h>
 #if FREEINK_DEVICE_WS397
 #include <Axp2101.h>
@@ -44,7 +45,14 @@ void PowerManager::armWakeOnPins(uint64_t gpioMask, bool wakeLow) {
 #else
   const esp_sleep_ext1_wakeup_mode_t lowMode = ESP_EXT1_WAKEUP_ANY_LOW;
 #endif
-  esp_sleep_enable_ext1_wakeup(gpioMask, wakeLow ? lowMode : ESP_EXT1_WAKEUP_ANY_HIGH);
+  // The _io variant, like Seeed's verified Sticky example — it is the current
+  // IDF API for ext1 and wires the RTC comparator through the path the vendor
+  // demo proved on this board. A rejected arm used to be invisible; report it
+  // so "never wakes" can be told apart from "never armed" over USB serial.
+  const esp_err_t err = esp_sleep_enable_ext1_wakeup_io(
+      gpioMask, wakeLow ? lowMode : ESP_EXT1_WAKEUP_ANY_HIGH);
+  esp_rom_printf("pwr: ext1 arm mask=0x%llx low=%d err=%d\n",
+                 (unsigned long long)gpioMask, wakeLow ? 1 : 0, (int)err);
 #elif SOC_GPIO_SUPPORT_DEEPSLEEP_WAKEUP
   // RISC-V (C3/C6/H2): the deep-sleep "gpio" wakeup source.
   esp_deep_sleep_enable_gpio_wakeup(gpioMask, wakeLow ? ESP_GPIO_WAKEUP_GPIO_LOW : ESP_GPIO_WAKEUP_GPIO_HIGH);
@@ -150,7 +158,12 @@ void PowerManager::deepSleepUntilPowerButtonOrTimer(const uint64_t micros) {
 }
 
 void PowerManager::deepSleep() {
-  esp_sleep_config_gpio_isolate();
+  // No esp_sleep_config_gpio_isolate() here: the wake pin must reach the RTC
+  // comparator untouched, and the only recipe verified on real reTerminal
+  // Sticky hardware (Seeed's low-power example) sleeps WITHOUT the isolate call
+  // and wakes on the button. Unheld pads simply power down with the TOP domain;
+  // rail pins that must stay defined are gpio-held by powerDownRailsForSleep(),
+  // and any residual pad leakage is capped by the app's 30-minute latch-off.
 #if !FREEINK_MCU_C61
   gpio_deep_sleep_hold_en();
 #endif
